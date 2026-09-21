@@ -1,5 +1,5 @@
 // Troque o número da versão sempre que publicar mudanças, para o celular atualizar.
-const CACHE = 'rende-v4';
+const CACHE = 'rende-v5';
 const CORE = [
   './', 'index.html', 'css/style.css', 'js/app.js', 'js/config.js',
   'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png',

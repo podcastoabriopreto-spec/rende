@@ -59,7 +59,13 @@
     t.textContent = msg;
     t.classList.add('show');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+    toastTimer = setTimeout(() => t.classList.remove('show'), 3600);
+  }
+
+  /** Extrai uma mensagem legível de um erro do Supabase/JS */
+  function errMsg(e) {
+    if (!e) return '';
+    return e.message || e.error_description || e.msg || String(e);
   }
 
   /* ================================================================
@@ -115,9 +121,18 @@
     sb: null,
     cloud: false,
     uid: null,
+    lastError: null, // motivo de a nuvem não estar ativa (ajuda a diagnosticar)
+    ready: null,      // promessa resolvida quando store.init() termina
 
     async init() {
-      if (!CFG.SUPABASE_URL || !CFG.SUPABASE_ANON_KEY || !window.supabase) return;
+      if (!CFG.SUPABASE_URL || !CFG.SUPABASE_ANON_KEY) {
+        this.lastError = 'Preencha SUPABASE_URL e SUPABASE_ANON_KEY em js/config.js.';
+        return;
+      }
+      if (!window.supabase) {
+        this.lastError = 'Biblioteca do Supabase não carregou (confira sua conexão ou o script no index.html).';
+        return;
+      }
       try {
         this.sb = window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY);
         let { data } = await this.sb.auth.getSession();
@@ -128,9 +143,11 @@
         }
         this.uid = data.session.user.id;
         this.cloud = true;
+        this.lastError = null;
       } catch (e) {
         console.warn('Supabase indisponível, usando modo local.', e);
         this.cloud = false;
+        this.lastError = errMsg(e) || 'Não foi possível conectar à nuvem.';
       }
     },
 
@@ -147,7 +164,7 @@
           }));
         } catch (e) {
           console.warn(e);
-          toast('Sem conexão com a nuvem.');
+          toast('Sem conexão com a nuvem: ' + errMsg(e));
           return [];
         }
       }
@@ -205,7 +222,12 @@
     localStorage.setItem(LS_CFG, JSON.stringify(state.cfg));
     clearTimeout(persistTimer);
     const v = state.veiculo;
-    persistTimer = setTimeout(() => store.saveCfg(v, state.cfg[v]), 800);
+    persistTimer = setTimeout(async () => {
+      // Espera o Supabase terminar de iniciar antes de decidir se salva na nuvem,
+      // pra não cair no modo local só porque a rede ainda não respondeu.
+      if (store.ready) await store.ready;
+      store.saveCfg(v, state.cfg[v]);
+    }, 800);
   }
 
   /* ================================================================
@@ -315,11 +337,12 @@
     last = { r, sel };
     watchBest(best);
 
-    // Seletor de combustível + selo "mais barato"
-    $$('#fuelSwitch button').forEach((b) => {
+    // Seletor de combustível (herói) + seletor de combustível (registrar) + selo "mais barato"
+    $$('#fuelSwitch button, #regFuelSwitch button').forEach((b) => {
       const f = b.dataset.fuel;
       b.setAttribute('aria-pressed', f === sel);
-      $('.tag', b).hidden = f !== best;
+      const tag = $('.tag', b);
+      if (tag) tag.hidden = f !== best;
     });
 
     // Herói
@@ -336,6 +359,15 @@
       $('#heroKm').textContent = '—';
       $('#heroSub').textContent = '';
       $('#miniText').textContent = 'Autonomia —';
+    }
+
+    // Até quantos km dá pra rodar, a partir do KM salvo
+    const heroLimit = $('#heroLimit');
+    if (c.km != null && R.ok) {
+      heroLimit.textContent = `Dá pra rodar até ${fmtInt(c.km + Math.round(R.km))} km`;
+      heroLimit.hidden = false;
+    } else {
+      heroLimit.hidden = true;
     }
 
     // Sem KM salvo: calculadora travada
@@ -509,8 +541,8 @@
       syncInputs(); render(); renderHistory();
     }));
 
-    // Combustível no herói
-    $$('#fuelSwitch button').forEach((b) => b.addEventListener('click', () => {
+    // Combustível: herói + seletor da seção "Registrar abastecimento" (ficam sincronizados)
+    $$('#fuelSwitch button, #regFuelSwitch button').forEach((b) => b.addEventListener('click', () => {
       cfg().combustivel = b.dataset.fuel;
       persist(); render();
     }));
@@ -589,12 +621,14 @@
       const btn = $('#registrar');
       btn.disabled = true;
       try {
+        // Garante que já sabemos se a nuvem está disponível antes de decidir onde salvar.
+        if (store.ready) await store.ready;
         await store.add(entry);
-        toast('Abastecimento registrado');
+        toast(store.cloud ? 'Abastecimento registrado na nuvem' : 'Abastecimento registrado neste aparelho');
         await loadHistory();
       } catch (e) {
         console.warn(e);
-        toast('Não foi possível registrar. Verifique a conexão e tente de novo.');
+        toast('Não foi possível registrar: ' + errMsg(e));
       }
       btn.disabled = false;
     });
@@ -605,7 +639,7 @@
       if (!b) return;
       if (!confirm('Excluir este abastecimento?')) return;
       try { await store.remove(b.dataset.id); toast('Abastecimento excluído'); await loadHistory(); }
-      catch { toast('Não foi possível excluir. Tente de novo.'); }
+      catch (e) { toast('Não foi possível excluir: ' + errMsg(e)); }
     });
 
     // Abas inferiores
@@ -629,6 +663,11 @@
         mini.classList.toggle('show', !en.isIntersecting && state.view === 'calc');
       }).observe($('#hero'));
     }
+
+    // Toca no indicador de sincronização pra ver por que não está na nuvem
+    $('#sync').addEventListener('click', () => {
+      toast(store.cloud ? 'Salvo na nuvem (Supabase).' : (store.lastError || 'Salvando só neste aparelho.'));
+    });
   }
 
 
@@ -701,12 +740,12 @@
       const es = state.entries.filter((e) => e.veiculo === v)
         .sort((a, b) => new Date(b.criado_em) - new Date(a.criado_em));
       if (!es.length) continue;
-      const last = es[0];
-      const dias = Math.floor((Date.now() - new Date(last.criado_em)) / 864e5);
+      const ultimo = es[0];
+      const dias = Math.floor((Date.now() - new Date(ultimo.criado_em)) / 864e5);
       if (dias >= ncfg.dias) {
-        const quando = new Date(last.criado_em).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' });
+        const quando = new Date(ultimo.criado_em).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' });
         addNotif({
-          key: `lembrete-${last.id}-${Math.floor(dias / ncfg.dias)}`,
+          key: `lembrete-${ultimo.id}-${Math.floor(dias / ncfg.dias)}`,
           titulo: `Hora de abastecer o ${v}?`,
           texto: `Faz ${dias} dias desde o último abastecimento (${quando}).`,
           silent: pushOn, // o push do servidor já avisa no celular
@@ -894,10 +933,20 @@
     syncInputs();
     render();
 
-    await store.init();
+    // Começa a inicializar o Supabase já, mas sem travar a primeira tela.
+    // Outras partes do app esperam `store.ready` antes de salvar algo,
+    // pra nunca cair no modo local só por causa da rede ainda não ter respondido.
+    store.ready = store.init();
+    await store.ready;
+
     const s = $('#sync');
     s.textContent = store.cloud ? 'Salvo na nuvem' : 'Só neste aparelho';
     s.classList.toggle('on', store.cloud);
+    s.title = store.cloud ? 'Toque para ver o status.' : (store.lastError || 'Toque para ver o motivo.');
+    if (!store.cloud && store.lastError) {
+      // Mostra o motivo real assim que o app abre — evita descobrir só ao tentar salvar.
+      toast('Nuvem indisponível: ' + store.lastError);
+    }
 
     if (store.cloud) { await store.loadCfg(); syncInputs(); render(); }
     checkTroca();

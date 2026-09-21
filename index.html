@@ -58,6 +58,7 @@
       <p class="hero-label" id="heroLabel"></p>
       <p class="hero-km"><span id="heroKm">—</span><small>km</small></p>
       <p class="hero-sub" id="heroSub"></p>
+      <p class="hero-limit" id="heroLimit" hidden></p>
     </section>
   </header>
 
@@ -125,6 +126,11 @@
 
       <section class="block">
         <h2>Registrar abastecimento</h2>
+        <p class="lbl">Vai abastecer com</p>
+        <div class="fuel-switch small" id="regFuelSwitch" role="group" aria-label="Combustível a registrar">
+          <button data-fuel="gasolina" aria-pressed="false"><i class="dot gas"></i>Gasolina</button>
+          <button data-fuel="etanol" aria-pressed="true"><i class="dot eth"></i>Etanol</button>
+        </div>
         <p class="hint" id="regHint"></p>
         <button class="primary" id="registrar">Registrar</button>
       </section>
